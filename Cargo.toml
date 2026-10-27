@@ -9,6 +9,8 @@ homepage = "https://github.com/huseyinbabal/tprom"
 keywords = ["prometheus", "tui", "terminal", "monitoring", "cli"]
 categories = ["command-line-utilities"]
 readme = "README.md"
+# Keep the README screenshot out of the published crate (sounds are embedded)
+exclude = ["assets/screenshot.png"]
 authors = ["Huseyin Babal"]
 
 [dependencies]

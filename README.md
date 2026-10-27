@@ -7,6 +7,8 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 
+![tprom showing alerts from 37 Prometheus servers with a new firing alert notification](assets/screenshot.png)
+
 ---
 
 ## Features
