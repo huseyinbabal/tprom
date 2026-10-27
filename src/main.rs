@@ -3,6 +3,7 @@
 mod app;
 mod client;
 mod model;
+mod notify;
 mod ui;
 
 use anyhow::Result;
@@ -95,7 +96,8 @@ enum FetchResult {
         error: String,
     },
     /// Multi-server alerts results (parallel fetch from multiple servers)
-    MultiServerAlerts(Vec<(String, Vec<Alert>)>),
+    /// Per server: its alerts, or `None` when the fetch failed
+    MultiServerAlerts(Vec<(String, Option<Vec<Alert>>)>),
     /// Multi-server query results (parallel fetch from multiple servers)
     MultiServerQuery {
         results: Vec<(String, Vec<QueryResult>)>,
@@ -111,6 +113,10 @@ pub struct Args {
     #[arg(short, long)]
     pub url: Option<String>,
 
+    /// Auto-refresh every N seconds for this session (overrides config)
+    #[arg(short, long, value_name = "SECS", value_parser = clap::value_parser!(u64).range(1..))]
+    pub refresh: Option<u64>,
+
     /// Bearer token for authentication
     #[arg(long)]
     pub token: Option<String>,
@@ -122,6 +128,11 @@ pub struct Args {
     /// Password for basic authentication
     #[arg(long)]
     pub password: Option<String>,
+
+    /// Notification sound for this session (overrides config): default,
+    /// alarm, siren, klaxon, a macOS system sound name or a file path
+    #[arg(long, value_name = "SOUND")]
+    pub notification_sound: Option<String>,
 }
 
 #[tokio::main]
@@ -137,6 +148,11 @@ async fn main() -> Result<()> {
 
     let mut app = App::new();
     app.rebuild_exclusions();
+    if let Some(secs) = args.refresh {
+        app.auto_refresh_enabled = true;
+        app.auto_refresh_interval = Duration::from_secs(secs);
+    }
+    app.notification_sound_override = args.notification_sound.clone();
 
     let (tx, mut rx) = mpsc::channel::<AppEvent>(100);
 
@@ -264,6 +280,7 @@ async fn main() -> Result<()> {
                         } => {
                             app.build_info = Some(build_info);
                             app.alerts = alerts;
+                            app.check_new_firing_alerts(&[]);
                             let filtered_len = app.apply_alert_filter().len();
                             if filtered_len == 0 || app.selected_alert_index >= filtered_len {
                                 app.selected_alert_index = 0;
@@ -292,6 +309,7 @@ async fn main() -> Result<()> {
                         }
                         FetchResult::Alerts(alerts) => {
                             app.alerts = alerts;
+                            app.check_new_firing_alerts(&[]);
                             let filtered_len = app.apply_alert_filter().len();
                             if filtered_len == 0 || app.selected_alert_index >= filtered_len {
                                 app.selected_alert_index = 0;
@@ -377,19 +395,54 @@ async fn main() -> Result<()> {
                             app.set_error(format!("Failed to fetch {}: {}", resource, error));
                         }
                         FetchResult::MultiServerAlerts(results) => {
-                            // Start collapsed: all server groups collapsed
-                            app.multi_server_collapsed_alerts =
-                                results.iter().map(|(name, _)| name.clone()).collect();
-                            app.multi_server_alerts = results;
+                            let same_servers = app.multi_server_mode_active
+                                && app.multi_server_alerts.len() == results.len()
+                                && app
+                                    .multi_server_alerts
+                                    .iter()
+                                    .all(|(name, _)| results.iter().any(|(n, _)| n == name));
+                            if !same_servers {
+                                // New selection: start with all server groups collapsed
+                                app.multi_server_collapsed_alerts =
+                                    results.iter().map(|(name, _)| name.clone()).collect();
+                                app.multi_server_flat_alert_index = 0;
+                            }
+                            // A failed server keeps the alerts from its last successful fetch
+                            let mut failed = Vec::new();
+                            let merged: Vec<(String, Vec<Alert>)> = results
+                                .into_iter()
+                                .map(|(name, alerts)| match alerts {
+                                    Some(alerts) => (name, alerts),
+                                    None => {
+                                        let previous = app
+                                            .multi_server_alerts
+                                            .iter()
+                                            .find(|(n, _)| *n == name)
+                                            .map(|(_, a)| a.clone())
+                                            .unwrap_or_default();
+                                        failed.push(name.clone());
+                                        (name, previous)
+                                    }
+                                })
+                                .collect();
+                            app.multi_server_alerts = merged;
                             app.multi_server_mode_active = true;
-                            app.multi_server_flat_alert_index = 0;
+                            app.check_new_firing_alerts(&failed);
                             let total: usize =
                                 app.multi_server_alerts.iter().map(|(_, a)| a.len()).sum();
-                            app.set_status(format!(
+                            let mut status = format!(
                                 "Multi-server: {} alerts from {} servers",
                                 total,
                                 app.multi_server_alerts.len()
-                            ));
+                            );
+                            if !failed.is_empty() {
+                                status.push_str(&format!(
+                                    " ({} unreachable: {})",
+                                    failed.len(),
+                                    failed.join(", ")
+                                ));
+                            }
+                            app.set_status(status);
                         }
                         FetchResult::MultiServerQuery {
                             results,
@@ -553,8 +606,12 @@ async fn main() -> Result<()> {
                 };
                 if should_refresh {
                     app.last_auto_refresh = Some(Instant::now());
-                    let resource = app.active_resource.clone();
-                    spawn_fetch(&mut app, &resource, &tx);
+                    if app.multi_server_mode_active && app.active_resource == "alerts" {
+                        spawn_multi_server_alerts(&mut app, &tx);
+                    } else {
+                        let resource = app.active_resource.clone();
+                        spawn_fetch(&mut app, &resource, &tx);
+                    }
                 }
             }
         }
@@ -939,6 +996,12 @@ fn handle_config_search_keys(app: &mut App, key: KeyCode) {
 }
 
 async fn handle_normal_keys(app: &mut App, key: KeyCode, tx: &mpsc::Sender<AppEvent>) {
+    // Esc dismisses alert notifications before anything else
+    if key == KeyCode::Esc && !app.alert_toasts.is_empty() {
+        app.alert_toasts.clear();
+        return;
+    }
+
     match key {
         KeyCode::Char('q') => {
             if app.active_resource == "query" && !app.query_input_active {
@@ -1222,6 +1285,21 @@ async fn handle_normal_keys(app: &mut App, key: KeyCode, tx: &mpsc::Sender<AppEv
             }
         }
 
+        // Toggle sound for new firing alerts
+        KeyCode::Char('b') => {
+            app.tprom_config.alert_sound = !app.tprom_config.alert_sound;
+            let state = if app.tprom_config.alert_sound {
+                "ON"
+            } else {
+                "OFF"
+            };
+            app.save_config_with_status(format!("Alert sound {}", state));
+        }
+
+        // Auto-refresh interval
+        KeyCode::Char('+') | KeyCode::Char('=') => app.step_refresh_interval(true),
+        KeyCode::Char('-') => app.step_refresh_interval(false),
+
         // Servers: add / Auto-refresh toggle
         KeyCode::Char('a') => {
             if app.active_resource == "servers" {
@@ -1230,15 +1308,16 @@ async fn handle_normal_keys(app: &mut App, key: KeyCode, tx: &mpsc::Sender<AppEv
             } else {
                 // Toggle auto-refresh
                 app.auto_refresh_enabled = !app.auto_refresh_enabled;
+                app.tprom_config.auto_refresh = app.auto_refresh_enabled;
                 if app.auto_refresh_enabled {
                     app.last_auto_refresh = Some(Instant::now());
-                    app.set_status(format!(
-                        "Auto-refresh ON ({}s)",
+                    app.save_config_with_status(format!(
+                        "Auto-refresh ON ({}s, +/- to change)",
                         app.auto_refresh_interval.as_secs()
                     ));
                 } else {
                     app.last_auto_refresh = None;
-                    app.set_status("Auto-refresh OFF");
+                    app.save_config_with_status("Auto-refresh OFF".to_string());
                 }
             }
         }
@@ -1698,13 +1777,9 @@ fn spawn_multi_server_alerts(app: &mut App, tx: &mpsc::Sender<AppEvent>) {
             handles.push(tokio::spawn(async move {
                 let client = match client::PrometheusClient::new(&server.url, server.auth.clone()) {
                     Ok(c) => c,
-                    Err(_) => return (name, Vec::new()),
+                    Err(_) => return (name, None),
                 };
-                let alerts = client
-                    .fetch_alerts()
-                    .await
-                    .map(|d| d.alerts)
-                    .unwrap_or_default();
+                let alerts = client.fetch_alerts().await.map(|d| d.alerts).ok();
                 (name, alerts)
             }));
         }

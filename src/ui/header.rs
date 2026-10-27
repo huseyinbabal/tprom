@@ -70,17 +70,26 @@ fn render_context_column(f: &mut Frame, app: &App, area: Rect) {
         ]),
     ];
 
-    if app.auto_refresh_enabled {
-        lines.push(Line::from(vec![
-            Span::styled("Refresh: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!(" {}s", app.auto_refresh_interval.as_secs()),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]));
-    }
+    let (refresh, refresh_style) = if app.auto_refresh_enabled {
+        (
+            format!(" every {}s", app.auto_refresh_interval.as_secs()),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        (" off".to_string(), Style::default().fg(Color::DarkGray))
+    };
+    let sound = if app.tprom_config.alert_sound {
+        Span::styled("  \u{266a}", Style::default().fg(Color::Magenta)) // ♪
+    } else {
+        Span::raw("")
+    };
+    lines.push(Line::from(vec![
+        Span::styled("Refresh: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(refresh, refresh_style),
+        sound,
+    ]));
 
     let paragraph = Paragraph::new(lines);
     f.render_widget(paragraph, area);

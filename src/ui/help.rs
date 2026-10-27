@@ -29,6 +29,13 @@ pub fn render(f: &mut Frame, app: &App) {
             lines.push(key_line("x", "Add exclusion rule"));
             lines.push(key_line("R", "Refresh"));
             lines.push(key_line("m", "Multi-server mode"));
+            lines.push(key_line(
+                "a",
+                "Toggle auto-refresh (needed for alert sound)",
+            ));
+            lines.push(key_line("+ / -", "Auto-refresh interval"));
+            lines.push(key_line("b", "Toggle sound on new critical alert"));
+            lines.push(key_line("Esc", "Dismiss alert notifications"));
             lines.push(Line::from(""));
             if app.multi_server_mode_active {
                 lines.push(section("Multi-Server"));

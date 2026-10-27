@@ -239,6 +239,18 @@ pub struct App {
     pub multi_server_query_results: Vec<(String, Vec<QueryResult>)>, // (server_name, results)
     pub multi_server_query_result_type: String,
     pub multi_server_flat_alert_index: usize, // navigation index across flattened tree
+
+    // New-alert notifications
+    /// Per server: names of notifiable alerts firing at its last successful fetch.
+    /// A server missing here has no baseline yet, so its first fetch stays silent.
+    pub firing_seen: HashMap<String, HashSet<String>>,
+    /// Last time each (server, alertname) was seen firing, to ignore flapping
+    pub firing_last_seen: HashMap<(String, String), std::time::Instant>,
+    /// Notifications shown until the user dismisses them (newest first)
+    pub alert_toasts: Vec<AlertToast>,
+    /// `--notification-sound`: replaces the configured sound for this session
+    /// only, so it is never written back to the config file
+    pub notification_sound_override: Option<String>,
     pub multi_server_flat_query_index: usize,
     pub multi_server_collapsed_alerts: HashSet<String>, // collapsed server names (alerts)
     pub multi_server_collapsed_query: HashSet<String>,  // collapsed server names (query)
@@ -315,6 +327,9 @@ impl App {
         ];
 
         let tprom_config = TpromConfig::load();
+        let auto_refresh_enabled = tprom_config.auto_refresh;
+        let auto_refresh_interval =
+            std::time::Duration::from_secs(tprom_config.refresh_interval_secs.max(1));
 
         Self {
             mode: Mode::Splash,
@@ -369,8 +384,8 @@ impl App {
             describe_scroll: 0,
             pending_action: None,
             last_key_press: None,
-            auto_refresh_enabled: false,
-            auto_refresh_interval: std::time::Duration::from_secs(5),
+            auto_refresh_enabled,
+            auto_refresh_interval,
             last_auto_refresh: None,
             autocomplete_suggestions: Vec::new(),
             autocomplete_selected: 0,
@@ -396,6 +411,10 @@ impl App {
             multi_server_query_results: Vec::new(),
             multi_server_query_result_type: String::new(),
             multi_server_flat_alert_index: 0,
+            firing_seen: HashMap::new(),
+            firing_last_seen: HashMap::new(),
+            alert_toasts: Vec::new(),
+            notification_sound_override: None,
             multi_server_flat_query_index: 0,
             multi_server_collapsed_alerts: HashSet::new(),
             multi_server_collapsed_query: HashSet::new(),
@@ -414,6 +433,126 @@ impl App {
             graph_value_max: 0.0,
             graph_legend_hovered: None,
         }
+    }
+
+    // ── New-alert notifications ─────────────────────────────────────────
+
+    /// Whether an alert should raise a notification when it starts firing
+    fn is_notifiable(&self, alert: &Alert, server: Option<&str>) -> bool {
+        let severities = &self.tprom_config.notify_severities;
+        alert.state == "firing"
+            && (severities.is_empty() || severities.iter().any(|s| s == alert.severity()))
+            && !self.is_alert_excluded(alert.name(), server)
+    }
+
+    /// Compare freshly fetched alerts with the previous fetch of each server and
+    /// notify about alert names that started firing. Instances of an alert name
+    /// that is already firing (e.g. a new failed job) don't count as new, and a
+    /// name that fired again within `FLAP_WINDOW` is treated as flapping.
+    /// `failed` servers keep their previous state.
+    pub fn check_new_firing_alerts(&mut self, failed: &[String]) {
+        const FLAP_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
+
+        let mut fetched: Vec<(String, Vec<&Alert>)> = Vec::new();
+        if self.multi_server_mode_active {
+            for (server, alerts) in &self.multi_server_alerts {
+                if failed.contains(server) {
+                    continue;
+                }
+                let notifiable = alerts
+                    .iter()
+                    .filter(|a| self.is_notifiable(a, Some(server)))
+                    .collect();
+                fetched.push((server.clone(), notifiable));
+            }
+        } else {
+            let notifiable = self
+                .alerts
+                .iter()
+                .filter(|a| self.is_notifiable(a, None))
+                .collect();
+            fetched.push((self.current_server_name().to_string(), notifiable));
+        }
+
+        let now = std::time::Instant::now();
+        let mut new_toasts = Vec::new();
+        let mut updates = Vec::new();
+        for (server, alerts) in fetched {
+            let names: HashSet<String> = alerts.iter().map(|a| a.name().to_string()).collect();
+            if let Some(previous) = self.firing_seen.get(&server) {
+                for alert in &alerts {
+                    let name = alert.name();
+                    let flapping = self
+                        .firing_last_seen
+                        .get(&(server.clone(), name.to_string()))
+                        .is_some_and(|t| now.duration_since(*t) < FLAP_WINDOW);
+                    let already_toasted = new_toasts
+                        .iter()
+                        .any(|t: &AlertToast| t.server == server && t.alertname == name);
+                    if !previous.contains(name) && !flapping && !already_toasted {
+                        new_toasts.push(AlertToast::new(&server, alert));
+                    }
+                }
+            }
+            updates.push((server, names));
+        }
+
+        for (server, names) in updates {
+            for name in &names {
+                self.firing_last_seen
+                    .insert((server.clone(), name.clone()), now);
+            }
+            self.firing_seen.insert(server, names);
+        }
+
+        if !new_toasts.is_empty() {
+            if self.tprom_config.alert_sound {
+                let sound = self
+                    .notification_sound_override
+                    .as_deref()
+                    .unwrap_or(&self.tprom_config.alert_sound_name);
+                crate::notify::play_alert_sound(sound, self.tprom_config.alert_sound_repeat);
+            }
+            new_toasts.append(&mut self.alert_toasts);
+            new_toasts.truncate(100);
+            self.alert_toasts = new_toasts;
+        }
+    }
+
+    /// Persist the config and report `msg` (or the save error) in the status bar
+    pub fn save_config_with_status(&mut self, msg: String) {
+        match self.tprom_config.save() {
+            Ok(()) => self.set_status(msg),
+            Err(e) => self.set_error(format!("{} (not saved: {})", msg, e)),
+        }
+    }
+
+    /// Step the auto-refresh interval up or down through common presets
+    pub fn step_refresh_interval(&mut self, up: bool) {
+        const PRESETS: [u64; 8] = [5, 10, 15, 30, 60, 120, 300, 600];
+        let current = self.auto_refresh_interval.as_secs();
+        let next = if up {
+            PRESETS
+                .iter()
+                .copied()
+                .find(|&p| p > current)
+                .unwrap_or(600)
+        } else {
+            PRESETS
+                .iter()
+                .rev()
+                .copied()
+                .find(|&p| p < current)
+                .unwrap_or(5)
+        };
+        self.auto_refresh_interval = std::time::Duration::from_secs(next);
+        self.tprom_config.refresh_interval_secs = next;
+        let state = if self.auto_refresh_enabled {
+            "ON"
+        } else {
+            "OFF"
+        };
+        self.save_config_with_status(format!("Auto-refresh interval {}s ({})", next, state));
     }
 
     /// Set an informational status message (auto-clears after a few seconds)
@@ -593,6 +732,7 @@ impl App {
         if let Some(ref client) = self.client {
             let data = client.fetch_alerts().await?;
             self.alerts = data.alerts;
+            self.check_new_firing_alerts(&[]);
             let filtered_len = self.apply_alert_filter().len();
             if filtered_len == 0 || self.selected_alert_index >= filtered_len {
                 self.selected_alert_index = 0;
@@ -1988,5 +2128,223 @@ impl App {
         if self.mode == Mode::Splash {
             self.splash_state.spinner_frame = self.spinner_frame % 4;
         }
+    }
+}
+
+/// A new firing alert shown in the notification toast until dismissed
+#[derive(Debug, Clone)]
+pub struct AlertToast {
+    pub at: chrono::DateTime<chrono::Local>,
+    pub server: String,
+    pub alertname: String,
+    pub severity: String,
+    pub summary: String,
+}
+
+impl AlertToast {
+    fn new(server: &str, alert: &Alert) -> Self {
+        let summary = ["summary", "description", "message"]
+            .iter()
+            .find_map(|k| alert.annotations.get(*k))
+            .map(|s| s.lines().next().unwrap_or("").to_string())
+            .unwrap_or_default();
+        Self {
+            at: chrono::Local::now(),
+            server: server.to_string(),
+            alertname: alert.name().to_string(),
+            severity: alert.severity().to_string(),
+            summary,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn alert(name: &str, severity: &str, instance: &str) -> Alert {
+        let labels = [
+            ("alertname", name),
+            ("severity", severity),
+            ("instance", instance),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        Alert {
+            labels,
+            annotations: HashMap::new(),
+            state: "firing".to_string(),
+            active_at: String::new(),
+            value: String::new(),
+        }
+    }
+
+    fn multi_app() -> App {
+        let mut app = App::new();
+        app.tprom_config = TpromConfig {
+            alert_sound: false,
+            ..TpromConfig::default()
+        };
+        app.compiled_exclusions.clear();
+        app.multi_server_mode_active = true;
+        app
+    }
+
+    fn fetch(app: &mut App, alerts: Vec<(&str, Vec<Alert>)>, failed: &[&str]) {
+        app.multi_server_alerts = alerts
+            .into_iter()
+            .map(|(s, a)| (s.to_string(), a))
+            .collect();
+        let failed: Vec<String> = failed.iter().map(|s| s.to_string()).collect();
+        app.check_new_firing_alerts(&failed);
+    }
+
+    #[test]
+    fn first_fetch_is_a_silent_baseline() {
+        let mut app = multi_app();
+        fetch(
+            &mut app,
+            vec![("a", vec![alert("Down", "critical", "1")])],
+            &[],
+        );
+        assert!(app.alert_toasts.is_empty());
+    }
+
+    #[test]
+    fn new_critical_alert_name_notifies_once() {
+        let mut app = multi_app();
+        fetch(&mut app, vec![("a", vec![])], &[]);
+        let firing = vec![
+            alert("Down", "critical", "1"),
+            alert("Down", "critical", "2"),
+        ];
+        fetch(&mut app, vec![("a", firing.clone())], &[]);
+        assert_eq!(app.alert_toasts.len(), 1);
+        assert_eq!(app.alert_toasts[0].alertname, "Down");
+        assert_eq!(app.alert_toasts[0].server, "a");
+
+        // Still firing on the next refresh: no new toast
+        fetch(&mut app, vec![("a", firing)], &[]);
+        assert_eq!(app.alert_toasts.len(), 1);
+    }
+
+    #[test]
+    fn new_instance_of_firing_alert_is_not_new() {
+        let mut app = multi_app();
+        fetch(
+            &mut app,
+            vec![("a", vec![alert("JobFailed", "critical", "job-1")])],
+            &[],
+        );
+        fetch(
+            &mut app,
+            vec![("a", vec![alert("JobFailed", "critical", "job-2")])],
+            &[],
+        );
+        assert!(app.alert_toasts.is_empty());
+    }
+
+    #[test]
+    fn non_critical_alerts_are_ignored() {
+        let mut app = multi_app();
+        fetch(&mut app, vec![("a", vec![])], &[]);
+        fetch(
+            &mut app,
+            vec![("a", vec![alert("HighCpu", "warning", "1")])],
+            &[],
+        );
+        assert!(app.alert_toasts.is_empty());
+    }
+
+    #[test]
+    fn failed_fetch_does_not_reset_server() {
+        let mut app = multi_app();
+        let firing = vec![alert("Down", "critical", "1")];
+        fetch(&mut app, vec![("a", firing.clone())], &[]);
+        fetch(&mut app, vec![("a", vec![])], &["a"]);
+        fetch(&mut app, vec![("a", firing)], &[]);
+        assert!(app.alert_toasts.is_empty());
+    }
+
+    #[test]
+    fn server_never_fetched_before_gets_baseline_first() {
+        let mut app = multi_app();
+        fetch(&mut app, vec![("a", vec![]), ("b", vec![])], &["b"]);
+        fetch(
+            &mut app,
+            vec![("a", vec![]), ("b", vec![alert("Down", "critical", "1")])],
+            &[],
+        );
+        assert!(app.alert_toasts.is_empty());
+    }
+
+    #[test]
+    fn flapping_alert_is_not_renotified() {
+        let mut app = multi_app();
+        fetch(&mut app, vec![("a", vec![])], &[]);
+        fetch(
+            &mut app,
+            vec![("a", vec![alert("Down", "critical", "1")])],
+            &[],
+        );
+        fetch(&mut app, vec![("a", vec![])], &[]);
+        fetch(
+            &mut app,
+            vec![("a", vec![alert("Down", "critical", "1")])],
+            &[],
+        );
+        assert_eq!(app.alert_toasts.len(), 1);
+    }
+
+    #[test]
+    fn excluded_alerts_are_ignored() {
+        let mut app = multi_app();
+        app.compiled_exclusions = vec![(Regex::new("^Down$").unwrap(), vec![])];
+        fetch(&mut app, vec![("a", vec![])], &[]);
+        fetch(
+            &mut app,
+            vec![("a", vec![alert("Down", "critical", "1")])],
+            &[],
+        );
+        assert!(app.alert_toasts.is_empty());
+    }
+
+    #[test]
+    fn toast_renders_and_lists_new_alerts() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut app = multi_app();
+        fetch(
+            &mut app,
+            vec![("prometheus-production-island05", vec![])],
+            &[],
+        );
+        let mut a = alert("MariaDBDatabaseSize", "critical", "1");
+        a.annotations
+            .insert("summary".into(), "Database size above 90%".into());
+        fetch(
+            &mut app,
+            vec![("prometheus-production-island05", vec![a])],
+            &[],
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        terminal
+            .draw(|f| crate::ui::alert_toast::render(f, &app, f.area()))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let text: String = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    + "\n"
+            })
+            .collect();
+        println!("{}", text);
+        assert!(text.contains("1 new firing alert"));
+        assert!(text.contains("MariaDBDatabaseSize"));
+        assert!(text.contains("prometheus-production-island05 · Database size above 90%"));
+        assert!(text.contains("Esc dismiss"));
     }
 }

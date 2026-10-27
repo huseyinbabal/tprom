@@ -1,3 +1,4 @@
+pub mod alert_toast;
 pub mod alerts_table;
 pub mod config_view;
 pub mod describe;
@@ -190,6 +191,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
         )));
         f.render_widget(status, chunks[3]);
     }
+
+    // New firing alerts stay on screen until dismissed
+    alert_toast::render(f, app, content_area);
 
     // Render overlays
     if app.mode == Mode::Confirm {

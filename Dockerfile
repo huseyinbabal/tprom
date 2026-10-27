@@ -12,7 +12,8 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs
 # Build dependencies only
 RUN cargo build --release && rm -rf src
 
-# Copy actual source code
+# Copy actual source code and embedded assets (notification sounds)
+COPY assets ./assets
 COPY src ./src
 
 # Build the actual binary

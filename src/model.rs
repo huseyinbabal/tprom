@@ -38,12 +38,67 @@ pub struct AlertExclusion {
 }
 
 /// Root config file stored in XDG config dir
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TpromConfig {
     #[serde(default)]
     pub servers: Vec<ServerConfig>,
     #[serde(default)]
     pub alert_exclusions: Vec<AlertExclusion>,
+    /// Play a sound when a new alert starts firing
+    #[serde(default = "default_true")]
+    pub alert_sound: bool,
+    /// Which sound to play: `default`, `alarm`, `siren`, `klaxon`, a macOS
+    /// system sound name (e.g. `Sosumi`) or a path to an audio file
+    #[serde(default = "default_alert_sound_name")]
+    pub alert_sound_name: String,
+    /// How many times the sound is played per notification (1-10)
+    #[serde(default = "default_alert_sound_repeat")]
+    pub alert_sound_repeat: u32,
+    /// Start with auto-refresh enabled
+    #[serde(default)]
+    pub auto_refresh: bool,
+    /// Auto-refresh interval in seconds
+    #[serde(default = "default_refresh_interval")]
+    pub refresh_interval_secs: u64,
+    /// Severities (the `severity` label) that raise a notification when they
+    /// start firing; empty = every severity
+    #[serde(default = "default_notify_severities")]
+    pub notify_severities: Vec<String>,
+}
+
+fn default_alert_sound_name() -> String {
+    "default".to_string()
+}
+
+fn default_alert_sound_repeat() -> u32 {
+    1
+}
+
+fn default_notify_severities() -> Vec<String> {
+    vec!["critical".to_string()]
+}
+
+fn default_refresh_interval() -> u64 {
+    60
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for TpromConfig {
+    fn default() -> Self {
+        Self {
+            servers: Vec::new(),
+            alert_exclusions: Vec::new(),
+            alert_sound: true,
+            alert_sound_name: default_alert_sound_name(),
+            alert_sound_repeat: default_alert_sound_repeat(),
+            auto_refresh: false,
+            refresh_interval_secs: default_refresh_interval(),
+            notify_severities: default_notify_severities(),
+        }
+    }
 }
 
 impl TpromConfig {
@@ -179,6 +234,13 @@ pub struct Alert {
 }
 
 impl Alert {
+    pub fn severity(&self) -> &str {
+        self.labels
+            .get("severity")
+            .map(|s| s.as_str())
+            .unwrap_or("")
+    }
+
     pub fn name(&self) -> &str {
         self.labels
             .get("alertname")
@@ -388,5 +450,23 @@ impl QueryResult {
     /// Get the value from an instant query result
     pub fn instant_value(&self) -> &str {
         self.value.as_ref().map(|(_, v)| v.as_str()).unwrap_or("")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_without_new_fields_uses_defaults() {
+        let yaml = "servers:\n- name: a\n  url: http://a:9090\n  auth:\n    type: none\nalert_exclusions: []\n";
+        let config: TpromConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.servers.len(), 1);
+        assert!(config.alert_sound);
+        assert_eq!(config.alert_sound_name, "default");
+        assert_eq!(config.alert_sound_repeat, 1);
+        assert!(!config.auto_refresh);
+        assert_eq!(config.refresh_interval_secs, 60);
+        assert_eq!(config.notify_severities, vec!["critical"]);
     }
 }
