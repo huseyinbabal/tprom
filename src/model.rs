@@ -4,11 +4,37 @@ use std::path::PathBuf;
 
 // ── Server / Config persistence ──────────────────────────────────────────────
 
+/// Authentication type for a Prometheus connection
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type")]
+pub enum AuthConfig {
+    #[default]
+    #[serde(rename = "none")]
+    None,
+    #[serde(rename = "basic")]
+    Basic { username: String, password: String },
+    #[serde(rename = "bearer")]
+    Bearer { token: String },
+}
+
 /// A saved Prometheus server connection
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub name: String,
     pub url: String,
+    #[serde(default)]
+    pub auth: AuthConfig,
+}
+
+/// An alert exclusion rule: alerts whose name matches the regex are hidden.
+/// When `servers` is empty the rule applies to all servers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertExclusion {
+    /// Regex pattern matched against alert name
+    pub pattern: String,
+    /// Server names this rule applies to (empty = all servers)
+    #[serde(default)]
+    pub servers: Vec<String>,
 }
 
 /// Root config file stored in XDG config dir
@@ -16,6 +42,8 @@ pub struct ServerConfig {
 pub struct TpromConfig {
     #[serde(default)]
     pub servers: Vec<ServerConfig>,
+    #[serde(default)]
+    pub alert_exclusions: Vec<AlertExclusion>,
 }
 
 impl TpromConfig {
@@ -52,8 +80,13 @@ impl TpromConfig {
         Ok(())
     }
 
-    pub fn add_server(&mut self, name: String, url: String) -> anyhow::Result<()> {
-        self.servers.push(ServerConfig { name, url });
+    pub fn add_server(
+        &mut self,
+        name: String,
+        url: String,
+        auth: AuthConfig,
+    ) -> anyhow::Result<()> {
+        self.servers.push(ServerConfig { name, url, auth });
         self.save()
     }
 }

@@ -1,6 +1,6 @@
 use crate::app::App;
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Row, Table, TableState},
@@ -35,6 +35,7 @@ fn render_label_names(f: &mut Frame, app: &App, area: Rect) {
         .block(
             Block::default()
                 .title(" Labels ")
+                .title_alignment(Alignment::Center)
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color)),
         );
@@ -69,6 +70,7 @@ fn render_label_names(f: &mut Frame, app: &App, area: Rect) {
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 )
+                .title_alignment(Alignment::Center)
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color)),
         );
@@ -99,6 +101,7 @@ fn render_label_values(f: &mut Frame, app: &App, area: Rect) {
         .block(
             Block::default()
                 .title(format!(" Values for \"{}\" ", label_name))
+                .title_alignment(Alignment::Center)
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color)),
         );
@@ -137,15 +140,12 @@ fn render_label_values(f: &mut Frame, app: &App, area: Rect) {
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 )
+                .title_alignment(Alignment::Center)
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color)),
         );
 
     let mut state = TableState::default();
-    if app.label_focus_right {
-        state.select(Some(app.selected_label_value_index));
-    } else {
-        state.select(Some(app.selected_label_value_index));
-    }
+    state.select(Some(app.selected_label_value_index));
     f.render_stateful_widget(table, area, &mut state);
 }

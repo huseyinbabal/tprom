@@ -1,6 +1,6 @@
 use crate::app::App;
 use ratatui::{
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -20,26 +20,20 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         }
     };
 
-    let mut lines: Vec<Line> = Vec::new();
-
     // Head stats section
-    lines.push(section_header("# Head Stats"));
-    lines.push(Line::from(""));
-    lines.push(kv_line(
-        "Num Series",
-        &tsdb.head_stats.num_series.to_string(),
-    ));
-    lines.push(kv_line(
-        "Num Label Pairs",
-        &tsdb.head_stats.num_label_pairs.to_string(),
-    ));
-    lines.push(kv_line(
-        "Chunk Count",
-        &tsdb.head_stats.chunk_count.to_string(),
-    ));
-    lines.push(kv_line("Min Time", &tsdb.head_stats.min_time.to_string()));
-    lines.push(kv_line("Max Time", &tsdb.head_stats.max_time.to_string()));
-    lines.push(Line::from(""));
+    let mut lines: Vec<Line> = vec![
+        section_header("# Head Stats"),
+        Line::from(""),
+        kv_line("Num Series", &tsdb.head_stats.num_series.to_string()),
+        kv_line(
+            "Num Label Pairs",
+            &tsdb.head_stats.num_label_pairs.to_string(),
+        ),
+        kv_line("Chunk Count", &tsdb.head_stats.chunk_count.to_string()),
+        kv_line("Min Time", &tsdb.head_stats.min_time.to_string()),
+        kv_line("Max Time", &tsdb.head_stats.max_time.to_string()),
+        Line::from(""),
+    ];
 
     // Top series by metric name
     lines.push(section_header("# Top Series by Metric Name"));
@@ -83,6 +77,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             )
+            .title_alignment(Alignment::Center)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray)),
     );

@@ -1,6 +1,7 @@
+use super::format_alert_value;
 use crate::app::{App, DescribeData};
 use ratatui::{
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -54,7 +55,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
             lines.push(kv_line("Name", alert.name()));
             lines.push(kv_line("State", &alert.state.to_uppercase()));
             lines.push(kv_line("Active At", &alert.active_at));
-            lines.push(kv_line("Value", &alert.value));
+            lines.push(kv_line("Value", &format_alert_value(&alert.value)));
             lines.push(Line::from(""));
 
             // Labels
@@ -171,6 +172,61 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
                 ]));
             }
         }
+        DescribeData::QueryResult(result) => {
+            lines.push(section_header("Query Result Details"));
+            lines.push(Line::from(""));
+
+            // Metric name
+            let name = result
+                .metric
+                .get("__name__")
+                .cloned()
+                .unwrap_or_else(|| "(no name)".to_string());
+            lines.push(kv_line("Metric", &name));
+            lines.push(Line::from(""));
+
+            // Labels
+            let mut labels: Vec<_> = result
+                .metric
+                .iter()
+                .filter(|(k, _)| k.as_str() != "__name__")
+                .collect();
+            labels.sort_by_key(|(k, _)| (*k).clone());
+
+            if !labels.is_empty() {
+                lines.push(section_header("Labels"));
+                lines.push(Line::from(""));
+                for (k, v) in &labels {
+                    lines.push(kv_line(k, v));
+                }
+                lines.push(Line::from(""));
+            }
+
+            // Value(s)
+            if let Some((ts, val)) = &result.value {
+                lines.push(section_header("Instant Value"));
+                lines.push(Line::from(""));
+                lines.push(kv_line("Timestamp", &format!("{:.3}", ts)));
+                lines.push(kv_line("Value", &format_alert_value(val)));
+            }
+
+            if let Some(ref values) = result.values {
+                lines.push(section_header(&format!(
+                    "Range Values ({} samples)",
+                    values.len()
+                )));
+                lines.push(Line::from(""));
+                for (ts, val) in values {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("  {:<20.3}", ts),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                        Span::styled(format_alert_value(val), Style::default().fg(Color::White)),
+                    ]));
+                }
+            }
+        }
         DescribeData::None => {
             lines.push(Line::from(Span::styled(
                 "Nothing selected.".to_string(),
@@ -186,6 +242,14 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         DescribeData::Alert(a) => format!(" Alert: {} ", a.name()),
         DescribeData::Rule(r) => format!(" Rule: {} ", r.name),
         DescribeData::Metric { name, .. } => format!(" Metric: {} ", name),
+        DescribeData::QueryResult(r) => {
+            let name = r
+                .metric
+                .get("__name__")
+                .cloned()
+                .unwrap_or_else(|| "result".to_string());
+            format!(" Query Result: {} ", name)
+        }
         DescribeData::None => " Describe ".to_string(),
     };
 
@@ -197,6 +261,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             )
+            .title_alignment(Alignment::Center)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray)),
     );

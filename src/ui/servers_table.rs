@@ -1,6 +1,6 @@
 use crate::app::App;
 use ratatui::{
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
@@ -73,6 +73,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 )
+                .title_alignment(Alignment::Center)
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray)),
         );

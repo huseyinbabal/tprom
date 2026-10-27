@@ -10,12 +10,13 @@ use ratatui::{
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let columns = Layout::default()
         .direction(Direction::Horizontal)
+        .spacing(2)
         .constraints([
-            Constraint::Percentage(20), // Context info
-            Constraint::Percentage(25), // Stats
-            Constraint::Percentage(20), // Keybindings 1
-            Constraint::Percentage(20), // Keybindings 2
-            Constraint::Percentage(15), // Logo
+            Constraint::Fill(1),    // Context info
+            Constraint::Length(16), // Stats
+            Constraint::Length(23), // Keybindings 1
+            Constraint::Length(22), // Keybindings 2
+            Constraint::Length(24), // Logo
         ])
         .split(area);
 
@@ -26,12 +27,33 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     render_logo(f, columns[4]);
 }
 
+/// Truncate `s` to at most `max` chars, ending with an ellipsis when cut.
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else if max == 0 {
+        String::new()
+    } else {
+        let mut out: String = s.chars().take(max - 1).collect();
+        out.push('…');
+        out
+    }
+}
+
 fn render_context_column(f: &mut Frame, app: &App, area: Rect) {
-    let lines = vec![
+    let multi_alerts = app.multi_server_mode_active && app.active_resource == "alerts";
+    let server = if multi_alerts {
+        format!("{} servers", app.multi_server_alerts.len())
+    } else {
+        app.current_server_name().to_string()
+    };
+    let value_width = (area.width as usize).saturating_sub(9);
+
+    let mut lines = vec![
         Line::from(vec![
             Span::styled("Server:  ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                app.current_server_name(),
+                truncate(&server, value_width),
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
@@ -47,6 +69,18 @@ fn render_context_column(f: &mut Frame, app: &App, area: Rect) {
             ),
         ]),
     ];
+
+    if app.auto_refresh_enabled {
+        lines.push(Line::from(vec![
+            Span::styled("Refresh: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!(" {}s", app.auto_refresh_interval.as_secs()),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
 
     let paragraph = Paragraph::new(lines);
     f.render_widget(paragraph, area);
@@ -89,9 +123,17 @@ fn render_stats_column(f: &mut Frame, app: &App, area: Rect) {
             ]
         }
         "alerts" => {
-            let total = app.alerts.len();
-            let firing = app.alerts.iter().filter(|a| a.state == "firing").count();
-            let pending = app.alerts.iter().filter(|a| a.state == "pending").count();
+            let alerts: Vec<&crate::model::Alert> = if app.multi_server_mode_active {
+                app.multi_server_alerts
+                    .iter()
+                    .flat_map(|(_, a)| a.iter())
+                    .collect()
+            } else {
+                app.alerts.iter().collect()
+            };
+            let total = alerts.len();
+            let firing = alerts.iter().filter(|a| a.state == "firing").count();
+            let pending = alerts.iter().filter(|a| a.state == "pending").count();
             vec![
                 Line::from(vec![
                     Span::styled("Total:   ", Style::default().fg(Color::DarkGray)),
@@ -192,6 +234,41 @@ fn render_stats_column(f: &mut Frame, app: &App, area: Rect) {
                 ]),
             ]
         }
+        "query" => {
+            vec![
+                Line::from(vec![
+                    Span::styled("Results: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        app.query_results.len().to_string(),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("Type:    ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        if app.query_result_type.is_empty() {
+                            "-".to_string()
+                        } else {
+                            app.query_result_type.clone()
+                        },
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("History: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        app.query_history.len().to_string(),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]),
+            ]
+        }
         _ => {
             vec![Line::from("")]
         }
@@ -209,16 +286,23 @@ fn render_keybindings_col1(f: &mut Frame, app: &App, area: Rect) {
             ("<C-d>", "Delete"),
             ("", ""),
         ],
-        "targets" | "alerts" | "rules" | "metrics" => vec![
+        "targets" | "rules" | "metrics" => vec![
             ("<d>", "Describe"),
             ("</>", "Filter"),
             ("<R>", "Refresh"),
-            ("", ""),
+            ("<a>", "Auto-refresh"),
         ],
+        "alerts" => vec![
+            ("<d>", "Describe"),
+            ("</>", "Filter"),
+            ("<x>", "Exclude"),
+            ("<m>", "Multi-Server"),
+        ],
+        "alertexclusion" => vec![("<x>", "Add"), ("<d>", "Edit"), ("<D>", "Delete"), ("", "")],
         "labels" => vec![
             ("<Tab>", "Switch panel"),
             ("<R>", "Refresh"),
-            ("", ""),
+            ("<a>", "Auto-refresh"),
             ("", ""),
         ],
         "config" => vec![
@@ -227,7 +311,18 @@ fn render_keybindings_col1(f: &mut Frame, app: &App, area: Rect) {
             ("<n/N>", "Next/Prev"),
             ("<R>", "Refresh"),
         ],
-        "tsdb" | "info" => vec![("<j/k>", "Scroll"), ("<R>", "Refresh"), ("", ""), ("", "")],
+        "query" => vec![
+            ("<Tab>", "Switch focus"),
+            ("<Enter>", "Execute"),
+            ("<v>", "Graph"),
+            ("<m>", "Multi-Server"),
+        ],
+        "tsdb" | "info" => vec![
+            ("<j/k>", "Scroll"),
+            ("<R>", "Refresh"),
+            ("<a>", "Auto-refresh"),
+            ("", ""),
+        ],
         _ => vec![
             ("<j/k>", "Navigate"),
             ("<R>", "Refresh"),
@@ -257,6 +352,7 @@ fn render_keybindings_col1(f: &mut Frame, app: &App, area: Rect) {
 fn render_keybindings_col2(f: &mut Frame, area: Rect) {
     let bindings = [
         ("<:>", "Command"),
+        ("<?>", "Help"),
         ("<q>", "Quit"),
         ("<ctrl-c>", "Force Quit"),
     ];
@@ -276,25 +372,19 @@ fn render_keybindings_col2(f: &mut Frame, area: Rect) {
 }
 
 fn render_logo(f: &mut Frame, area: Rect) {
+    let logo_style = Style::default()
+        .fg(Color::Rgb(255, 140, 0))
+        .add_modifier(Modifier::BOLD);
     let logo = vec![
+        Line::from(Span::styled("▀█▀ █▀▀█ █▀▀▄ █▀▀█ █▀▄▀█", logo_style)),
+        Line::from(Span::styled(" █  █▄▄▀ █▀▀▄ █  █ █ █ █", logo_style)),
+        Line::from(Span::styled(" ▀  ▀    ▀  ▀ ▀▀▀▀ ▀   ▀", logo_style)),
         Line::from(Span::styled(
-            "▀█▀ █▀█ █▀█ █▀█ █▄█",
-            Style::default()
-                .fg(Color::Rgb(255, 140, 0))
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::styled(
-            " █  █▀▀ █▀▄ █▄█ █ █",
-            Style::default()
-                .fg(Color::Rgb(255, 140, 0))
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::styled(
-            "      Prometheus TUI",
+            "  Prometheus TUI",
             Style::default().fg(Color::DarkGray),
         )),
         Line::from(Span::styled(
-            format!("            v{}", env!("CARGO_PKG_VERSION")),
+            format!("       v{}", env!("CARGO_PKG_VERSION")),
             Style::default().fg(Color::DarkGray),
         )),
     ];

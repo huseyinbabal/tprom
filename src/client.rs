@@ -4,13 +4,15 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 /// HTTP client for the Prometheus v1 API
+#[derive(Clone)]
 pub struct PrometheusClient {
     base_url: String,
     http: reqwest::Client,
+    auth: AuthConfig,
 }
 
 impl PrometheusClient {
-    pub fn new(base_url: &str) -> Result<Self> {
+    pub fn new(base_url: &str, auth: AuthConfig) -> Result<Self> {
         let url = base_url.trim_end_matches('/').to_string();
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
@@ -18,6 +20,7 @@ impl PrometheusClient {
         Ok(Self {
             base_url: url,
             http,
+            auth,
         })
     }
 
@@ -25,12 +28,20 @@ impl PrometheusClient {
         format!("{}/api/v1{}", self.base_url, path)
     }
 
+    /// Apply auth headers to a request builder
+    fn apply_auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.auth {
+            AuthConfig::None => req,
+            AuthConfig::Basic { username, password } => req.basic_auth(username, Some(password)),
+            AuthConfig::Bearer { token } => req.bearer_auth(token),
+        }
+    }
+
     // ── Targets ──────────────────────────────────────────────────────────
 
     pub async fn fetch_targets(&self) -> Result<TargetsData> {
         let resp: ApiResponse<TargetsData> = self
-            .http
-            .get(self.api_url("/targets"))
+            .apply_auth(self.http.get(self.api_url("/targets")))
             .send()
             .await?
             .json()
@@ -42,8 +53,7 @@ impl PrometheusClient {
 
     pub async fn fetch_alerts(&self) -> Result<AlertsData> {
         let resp: ApiResponse<AlertsData> = self
-            .http
-            .get(self.api_url("/alerts"))
+            .apply_auth(self.http.get(self.api_url("/alerts")))
             .send()
             .await?
             .json()
@@ -55,8 +65,7 @@ impl PrometheusClient {
 
     pub async fn fetch_rules(&self) -> Result<RulesData> {
         let resp: ApiResponse<RulesData> = self
-            .http
-            .get(self.api_url("/rules"))
+            .apply_auth(self.http.get(self.api_url("/rules")))
             .send()
             .await?
             .json()
@@ -68,8 +77,7 @@ impl PrometheusClient {
 
     pub async fn fetch_metric_names(&self) -> Result<Vec<String>> {
         let resp: ApiResponse<Vec<String>> = self
-            .http
-            .get(self.api_url("/label/__name__/values"))
+            .apply_auth(self.http.get(self.api_url("/label/__name__/values")))
             .send()
             .await?
             .json()
@@ -81,8 +89,7 @@ impl PrometheusClient {
 
     pub async fn fetch_metadata(&self) -> Result<HashMap<String, Vec<MetricMetadata>>> {
         let resp: ApiResponse<HashMap<String, Vec<MetricMetadata>>> = self
-            .http
-            .get(self.api_url("/metadata"))
+            .apply_auth(self.http.get(self.api_url("/metadata")))
             .send()
             .await?
             .json()
@@ -94,8 +101,7 @@ impl PrometheusClient {
 
     pub async fn fetch_label_names(&self) -> Result<Vec<String>> {
         let resp: ApiResponse<Vec<String>> = self
-            .http
-            .get(self.api_url("/labels"))
+            .apply_auth(self.http.get(self.api_url("/labels")))
             .send()
             .await?
             .json()
@@ -105,8 +111,10 @@ impl PrometheusClient {
 
     pub async fn fetch_label_values(&self, label: &str) -> Result<Vec<String>> {
         let resp: ApiResponse<Vec<String>> = self
-            .http
-            .get(self.api_url(&format!("/label/{}/values", label)))
+            .apply_auth(
+                self.http
+                    .get(self.api_url(&format!("/label/{}/values", label))),
+            )
             .send()
             .await?
             .json()
@@ -118,8 +126,7 @@ impl PrometheusClient {
 
     pub async fn fetch_tsdb_status(&self) -> Result<TsdbStatusData> {
         let resp: ApiResponse<TsdbStatusData> = self
-            .http
-            .get(self.api_url("/status/tsdb"))
+            .apply_auth(self.http.get(self.api_url("/status/tsdb")))
             .send()
             .await?
             .json()
@@ -131,8 +138,7 @@ impl PrometheusClient {
 
     pub async fn fetch_config(&self) -> Result<ConfigData> {
         let resp: ApiResponse<ConfigData> = self
-            .http
-            .get(self.api_url("/status/config"))
+            .apply_auth(self.http.get(self.api_url("/status/config")))
             .send()
             .await?
             .json()
@@ -144,8 +150,7 @@ impl PrometheusClient {
 
     pub async fn fetch_runtime_info(&self) -> Result<RuntimeInfoData> {
         let resp: ApiResponse<RuntimeInfoData> = self
-            .http
-            .get(self.api_url("/status/runtimeinfo"))
+            .apply_auth(self.http.get(self.api_url("/status/runtimeinfo")))
             .send()
             .await?
             .json()
@@ -157,8 +162,7 @@ impl PrometheusClient {
 
     pub async fn fetch_build_info(&self) -> Result<BuildInfoData> {
         let resp: ApiResponse<BuildInfoData> = self
-            .http
-            .get(self.api_url("/status/buildinfo"))
+            .apply_auth(self.http.get(self.api_url("/status/buildinfo")))
             .send()
             .await?
             .json()
@@ -170,8 +174,7 @@ impl PrometheusClient {
 
     pub async fn fetch_flags(&self) -> Result<HashMap<String, String>> {
         let resp: ApiResponse<HashMap<String, String>> = self
-            .http
-            .get(self.api_url("/status/flags"))
+            .apply_auth(self.http.get(self.api_url("/status/flags")))
             .send()
             .await?
             .json()
@@ -183,9 +186,34 @@ impl PrometheusClient {
 
     pub async fn query_instant(&self, expr: &str) -> Result<QueryData> {
         let resp: ApiResponse<QueryData> = self
-            .http
-            .get(self.api_url("/query"))
-            .query(&[("query", expr)])
+            .apply_auth(
+                self.http
+                    .get(self.api_url("/query"))
+                    .query(&[("query", expr)]),
+            )
+            .send()
+            .await?
+            .json()
+            .await?;
+        Ok(resp.data)
+    }
+
+    // ── Range query ─────────────────────────────────────────────────────
+
+    pub async fn query_range(
+        &self,
+        expr: &str,
+        start: f64,
+        end: f64,
+        step: f64,
+    ) -> Result<QueryData> {
+        let resp: ApiResponse<QueryData> = self
+            .apply_auth(self.http.get(self.api_url("/query_range")).query(&[
+                ("query", expr),
+                ("start", &start.to_string()),
+                ("end", &end.to_string()),
+                ("step", &step.to_string()),
+            ]))
             .send()
             .await?
             .json()

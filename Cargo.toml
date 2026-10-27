@@ -14,13 +14,14 @@ authors = ["Huseyin Babal"]
 [dependencies]
 anyhow = "1.0"
 chrono = "0.4"
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 crossterm = "0.29"
-dirs = "6.0"
+dirs = "7.0"
 ratatui = "0.30"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json", "query"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
 thiserror = "2.0"
-tokio = { version = "1.49", features = ["full"] }
+regex = "1.13"
+tokio = { version = "1.54", features = ["full"] }

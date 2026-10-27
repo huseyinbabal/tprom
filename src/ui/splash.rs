@@ -26,26 +26,41 @@ pub fn render(f: &mut Frame, state: &SplashState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(35),
-            Constraint::Length(6),
+            Constraint::Percentage(30),
+            Constraint::Length(10),
             Constraint::Length(2),
             Constraint::Min(1),
         ])
         .split(area);
 
-    // Logo
+    // Logo - block letter TPROM
+    let logo_style = Style::default()
+        .fg(Color::Rgb(255, 140, 0))
+        .add_modifier(Modifier::BOLD);
     let logo = vec![
         Line::from(Span::styled(
-            "▀█▀ █▀█ █▀█ █▀█ █▄█",
-            Style::default()
-                .fg(Color::Rgb(255, 140, 0))
-                .add_modifier(Modifier::BOLD),
+            "████████╗██████╗ ██████╗  ██████╗ ███╗   ███╗",
+            logo_style,
         )),
         Line::from(Span::styled(
-            " █  █▀▀ █▀▄ █▄█ █ █",
-            Style::default()
-                .fg(Color::Rgb(255, 140, 0))
-                .add_modifier(Modifier::BOLD),
+            "╚══██╔══╝██╔══██╗██╔══██╗██╔═══██╗████╗ ████║",
+            logo_style,
+        )),
+        Line::from(Span::styled(
+            "   ██║   ██████╔╝██████╔╝██║   ██║██╔████╔██║",
+            logo_style,
+        )),
+        Line::from(Span::styled(
+            "   ██║   ██╔═══╝ ██╔══██╗██║   ██║██║╚██╔╝██║",
+            logo_style,
+        )),
+        Line::from(Span::styled(
+            "   ██║   ██║     ██║  ██║╚██████╔╝██║ ╚═╝ ██║",
+            logo_style,
+        )),
+        Line::from(Span::styled(
+            "   ╚═╝   ╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚═╝     ╚═╝",
+            logo_style,
         )),
         Line::from(""),
         Line::from(Span::styled(
